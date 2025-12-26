@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Clipper</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body{margin:0;padding:16px;font-family:sans-serif;font-size:16px;}
+  section{max-width:800px;margin:auto;position:relative;}
+  [hidden]{display:none;}
+  input,button{font-size:16px;margin:4px 0;}
+  ul{padding-left:0;}
+  li{list-style:none;padding:8px;border-bottom:1px solid #ddd;display:flex;justify-content:space-between;align-items:center;position:relative;}
+  li:hover{background:#f5f5f5;}
+  #title{width:100%;font-size:20px;margin:8px 0;border:none;padding:0;box-sizing:border-box;}
+  #editor{min-height:70vh;outline:none;white-space:pre-wrap;word-break:break-word;border-top:1px solid #ccc;padding-top:16px;}
+  img{max-width:100%;display:block;margin:8px 0;}
+  .video{position:relative;width:100%;padding-top:56.25%;margin:12px auto;}
+  .video iframe{position:absolute;inset:0;width:100%;height:100%;border:0;}
+  @media(max-width:768px){.video{max-width:100%;}}
+  .memo-right{display:flex;align-items:center;gap:8px;}
+  .delete-btn{background:none;border:none;color:red;cursor:pointer;font-size:16px;}
+  #user-icon{width:32px;height:32px;border-radius:50%;cursor:pointer;}
+  #list-header{display:flex;justify-content:space-between;align-items:center;}
+  #toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.8);color:#fff;padding:12px 24px;border-radius:8px;opacity:0;pointer-events:none;transition:opacity 0.3s ease;z-index:1000;}
+  #toast.show{opacity:1;pointer-events:auto;}
+  .preview-popup{position:fixed;background:#fff;border:1px solid #333;padding:8px;z-index:1000;max-width:80%;box-shadow:0 2px 6px rgba(0,0,0,0.3);}
+  .date-span{font-size:smaller;color:#666;}
+  .menu-btn{background:none;border:none;font-size:16px;cursor:pointer;}
+  .menu-popup{position:absolute;top:100%;right:0;background:#fff;border:1px solid #ccc;padding:4px 0;box-shadow:0 2px 6px rgba(0,0,0,0.2);display:none;z-index:10;}
+  .menu-popup button{width:100%;text-align:left;padding:4px 12px;background:none;border:none;cursor:pointer;}
+  .menu-popup button:hover{background:#eee;}
+</style>
+</head>
+<body>
+
+<!-- 🔐 Login -->
+<section id="view-login">
+  <h2>Login</h2>
+  <input id="email" placeholder="email"><br>
+  <input id="password" type="password" placeholder="password"><br>
+  <button id="login">Login</button>
+  <button id="signup">Sign up</button><br><br>
+  <button id="google-login">Login with Google</button>
+</section>
+
+<!-- 📂 List -->
+<section id="view-list" hidden>
+  <div id="list-header">
+    <h2>Memos</h2>
+    <img id="user-icon" src="" title="Switch Account">
+  </div>
+  <button id="new-memo">＋ New memo</button>
+  <ul id="memo-list"></ul>
+</section>
+
+<!-- ✏️ Editor -->
+<section id="view-editor" hidden>
+  <button id="back">←</button>
+  <input id="title" placeholder="">
+  <div id="editor" contenteditable="true"></div>
+</section>
+
+<!-- フローティング通知 -->
+<div id="toast"></div>
+
+<script type="module">
+/* ---------- Firebase ---------- */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+import { getFirestore, collection, addDoc, getDocs, doc, getDoc, setDoc, deleteDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+/* Firebase 設定 */
+const firebaseConfig = { apiKey:"AIzaSyCdDf0GH80PoGlcbk2yjlaVQfP01Gk9m18", authDomain:"noteeditor-ba1db.firebaseapp.com", projectId:"noteeditor-ba1db" };
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+/* DOM */
+const views={login:document.getElementById('view-login'),list:document.getElementById('view-list'),editor:document.getElementById('view-editor')};
+const emailInput=document.getElementById('email');
+const passwordInput=document.getElementById('password');
+const memoList=document.getElementById('memo-list');
+const editor=document.getElementById('editor');
+const titleInput=document.getElementById('title');
+const userIcon=document.getElementById('user-icon');
+const toast=document.getElementById('toast');
+
+/* Toast */
+function showToast(msg,d=2000){ toast.textContent=msg; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'),d); }
+
+/* View */
+function show(view){ Object.values(views).forEach(v=>v.hidden=true); views[view].hidden=false; }
+
+/* Navigation */
+function navigateTo(view,memoId=null){ 
+  if(view==='editor'){ location.hash = `#/editor/${memoId}`; openEditor(memoId,false);}
+  else if(view==='list'){ location.hash='#/list'; show('list');}
+  else{ location.hash='#/'; show('login'); }
+}
+
+/* Hash change */
+window.addEventListener('hashchange',()=>{
+  const h=location.hash;
+  if(h.startsWith('#/editor/')) openEditor(h.split('/')[2],false);
+  else if(h==='#/list'){ loadMemos(); show('list'); }
+  else show('login');
+});
+
+/* Page load */
+window.addEventListener('load',()=>{ if(location.hash) window.dispatchEvent(new Event('hashchange')); });
+
+/* Auth */
+document.getElementById('login').onclick=()=>signInWithEmailAndPassword(auth,emailInput.value,passwordInput.value);
+document.getElementById('signup').onclick=()=>createUserWithEmailAndPassword(auth,emailInput.value,passwordInput.value);
+const provider = new GoogleAuthProvider();
+document.getElementById('google-login').onclick=async()=>{ try{ await signInWithPopup(auth,provider);} catch(e){alert("エラー\n"+e.code);} }
+userIcon.onclick=async()=>{ try{ await signInWithPopup(auth,provider);} catch(e){alert("アカウント切替失敗\n"+e.code);} }
+
+/* Logout */
+function logout(){ signOut(auth); navigateTo('login'); }
+
+/* State */
+let currentMemoId=null;
+
+/* Auth state */
+onAuthStateChanged(auth,user=>{
+  if(user){
+    if(user.photoURL) userIcon.src=user.photoURL;
+    if(location.hash.startsWith('#/editor/')) openEditor(location.hash.split('/')[2],false);
+    else navigateTo('list');
+  } else navigateTo('login');
+});
+
+/* Load list */
+async function loadMemos(){
+  memoList.innerHTML='';
+  const thirtyDaysAgo = Date.now() - 30*24*60*60*1000;
+  const q=query(collection(db,'users',auth.currentUser.uid,'memos'), orderBy('updated','desc'));
+  const snap = await getDocs(q);
+  snap.forEach(d=>{
+    const data=d.data();
+    if(data.deletedAt && data.deletedAt<thirtyDaysAgo) return; // 30日超えは非表示
+    const li=document.createElement('li');
+    li.textContent=data.title||'Untitled';
+    // 長押しプレビュー
+    let timer;
+    li.addEventListener('mousedown',()=>{ timer=setTimeout(()=>showPreview(data),500); });
+    li.addEventListener('mouseup',()=>clearTimeout(timer));
+    li.addEventListener('mouseleave',()=>clearTimeout(timer));
+    li.addEventListener('touchstart',()=>{ timer=setTimeout(()=>showPreview(data),500); });
+    li.addEventListener('touchend',()=>clearTimeout(timer));
+
+    // 右側「…」メニュー
+    const rightDiv=document.createElement('div'); rightDiv.className='memo-right';
+    const dateSpan=document.createElement('span'); dateSpan.className='date-span'; dateSpan.textContent=new Date(data.updated).toLocaleString();
+    const menuBtn=document.createElement('button'); menuBtn.textContent='…'; menuBtn.className='menu-btn';
+    const menuPopup=document.createElement('div'); menuPopup.className='menu-popup';
+    const trashBtn=document.createElement('button'); trashBtn.textContent='ゴミ箱へ';
+    trashBtn.onclick=async(e)=>{ e.stopPropagation(); await setDoc(doc(db,'users',auth.currentUser.uid,'memos',d.id),{deletedAt:Date.now()},{merge:true}); li.remove(); showToast('ゴミ箱に移動しました'); menuPopup.style.display='none'; }
+    const logoutBtn=document.createElement('button'); logoutBtn.textContent='ログアウト'; logoutBtn.onclick=()=>logout();
+    menuPopup.append(trashBtn,logoutBtn);
+    menuBtn.onclick=(e)=>{ e.stopPropagation(); menuPopup.style.display=(menuPopup.style.display==='block')?'none':'block'; }
+    rightDiv.append(dateSpan,menuBtn,menuPopup);
+    li.appendChild(rightDiv);
+    li.onclick=()=>navigateTo('editor',d.id);
+    memoList.appendChild(li);
+  });
+}
+
+/* New memo */
+document.getElementById('new-memo').onclick=async()=>{
+  const ref=await addDoc(collection(db,'users',auth.currentUser.uid,'memos'),{title:'',content:'',updated:Date.now(),deletedAt:null});
+  navigateTo('editor',ref.id);
+}
+
+/* Open editor */
+async function openEditor(id,pushState=true){
+  currentMemoId=id;
+  const snap=await getDoc(doc(db,'users',auth.currentUser.uid,'memos',id));
+  const data=snap.data();
+  titleInput.value=data.title||'';
+  editor.innerHTML=data.content||'';
+  show('editor');
+  if(pushState) location.hash=`#/editor/${id}`;
+}
+
+/* Back button */
+document.getElementById('back').onclick=()=>navigateTo('list');
+
+/* Save */
+async function saveMemo(){
+  if(!currentMemoId) return;
+  let title = titleInput.value.trim();
+  if(!title) title=editor.innerText.split('\n')[0].trim()||'';
+  await setDoc(doc(db,'users',auth.currentUser.uid,'memos',currentMemoId),{title,content:editor.innerHTML,updated:Date.now()},{merge:true});
+}
+editor.addEventListener('input',saveMemo);
+titleInput.addEventListener('input',saveMemo);
+
+/* Click outside */
+document.addEventListener('click', (e)=>{ if(!e.target.closest('#editor')&&!e.target.closest('#title')) document.activeElement.blur(); });
+
+/* Paste & Link preview */
+editor.addEventListener('paste', async(e)=>{
+  e.preventDefault();
+  const items=e.clipboardData.items;
+  const range=document.getSelection().getRangeAt(0);
+  for(const item of items){
+    if(item.type.startsWith('image/')){
+      const reader=new FileReader();
+      reader.onload=()=>{ const img=document.createElement('img'); img.src=reader.result; range.insertNode(img); range.collapse(false); saveMemo(); }
+      reader.readAsDataURL(item.getAsFile()); return;
+    }
+  }
+  const text=e.clipboardData.getData('text/plain');
+  const yt=text.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w-]+)/);
+  if(yt){
+    const wrap=document.createElement('div'); wrap.className='video';
+    const iframe=document.createElement('iframe'); iframe.src=`https://www.youtube-nocookie.com/embed/${yt[1]}?modestbranding=1&rel=0&playsinline=1`;
+    iframe.allowFullscreen=true; wrap.appendChild(iframe); range.insertNode(wrap); range.collapse(false); saveMemo();
+  } else {
+    const urlRegex=/https?:\/\/\S+\.(?:png|jpg|jpeg|gif)/i;
+    const m=text.match(urlRegex);
+    if(m){ const img=document.createElement('img'); img.src=m[0]; range.insertNode(img); range.collapse(false); saveMemo(); }
+    else { document.execCommand('insertText',false,text); saveMemo(); }
+  }
+});
+
+/* Long press preview */
+function showPreview(data){
+  const preview=document.createElement('div'); preview.className='preview-popup';
+  preview.innerHTML=data.content||data.title||'';
+  document.body.appendChild(preview);
+  const rect=document.getSelection().getRangeAt(0).getBoundingClientRect();
+  preview.style.top=(rect.top+20)+'px';
+  preview.style.left=(rect.left)+'px';
+  setTimeout(()=>preview.remove(),3000);
+}
+</script>
+
+</body>
+</html>
